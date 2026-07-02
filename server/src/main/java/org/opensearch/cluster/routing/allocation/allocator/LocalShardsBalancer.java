@@ -76,6 +76,9 @@ public class LocalShardsBalancer extends ShardsBalancer {
     private final Set<RoutingNode> inEligibleTargetNode;
     private final Supplier<Boolean> timedOutFunc;
     private int totalShardCount = 0;
+    private final Map<String, String> indexToGroup;
+    private final Map<String, Float> avgShardsPerGroupMap;
+    private final Map<String, Float> avgPrimaryShardsPerGroupMap;
 
     public LocalShardsBalancer(
         Logger logger,
@@ -97,6 +100,9 @@ public class LocalShardsBalancer extends ShardsBalancer {
         avgPrimaryShardsPerNode = (float) (StreamSupport.stream(metadata.spliterator(), false)
             .mapToInt(IndexMetadata::getNumberOfShards)
             .sum()) / routingNodes.size();
+        this.indexToGroup = buildIndexToGroupMap(metadata);
+        this.avgShardsPerGroupMap = buildAvgShardsPerGroupMap(metadata, indexToGroup, routingNodes.size());
+        this.avgPrimaryShardsPerGroupMap = buildAvgPrimaryShardsPerGroupMap(metadata, indexToGroup, routingNodes.size());
         nodes = Collections.unmodifiableMap(buildModelFromAssigned());
         sorter = newNodeSorter();
         inEligibleTargetNode = new HashSet<>();
@@ -138,6 +144,67 @@ public class LocalShardsBalancer extends ShardsBalancer {
     @Override
     public float avgShardsPerNode() {
         return totalShardCount / nodes.size();
+    }
+
+    @Override
+    public float avgShardsPerGroup(String group) {
+        return avgShardsPerGroupMap.getOrDefault(group, 0.0f);
+    }
+
+    @Override
+    public float avgPrimaryShardsPerGroup(String group) {
+        return avgPrimaryShardsPerGroupMap.getOrDefault(group, 0.0f);
+    }
+
+    private static Map<String, String> buildIndexToGroupMap(Metadata metadata) {
+        Map<String, String> map = new HashMap<>();
+        for (IndexMetadata indexMetadata : metadata) {
+            String group = IndexMetadata.INDEX_ROUTING_ALLOCATION_INDEX_GROUP_SETTING.get(indexMetadata.getSettings());
+            if (group != null && group.isEmpty() == false) {
+                map.put(indexMetadata.getIndex().getName(), group);
+            }
+        }
+        return Collections.unmodifiableMap(map);
+    }
+
+    private static Map<String, Float> buildAvgShardsPerGroupMap(Metadata metadata, Map<String, String> indexToGroup, int nodeCount) {
+        if (nodeCount == 0 || indexToGroup.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, Integer> groupTotalShards = new HashMap<>();
+        for (IndexMetadata indexMetadata : metadata) {
+            String group = indexToGroup.get(indexMetadata.getIndex().getName());
+            if (group != null) {
+                groupTotalShards.merge(group, indexMetadata.getTotalNumberOfShards(), Integer::sum);
+            }
+        }
+        Map<String, Float> avgMap = new HashMap<>();
+        for (Map.Entry<String, Integer> entry : groupTotalShards.entrySet()) {
+            avgMap.put(entry.getKey(), (float) entry.getValue() / nodeCount);
+        }
+        return Collections.unmodifiableMap(avgMap);
+    }
+
+    private static Map<String, Float> buildAvgPrimaryShardsPerGroupMap(
+        Metadata metadata,
+        Map<String, String> indexToGroup,
+        int nodeCount
+    ) {
+        if (nodeCount == 0 || indexToGroup.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<String, Integer> groupPrimaryShards = new HashMap<>();
+        for (IndexMetadata indexMetadata : metadata) {
+            String group = indexToGroup.get(indexMetadata.getIndex().getName());
+            if (group != null) {
+                groupPrimaryShards.merge(group, indexMetadata.getNumberOfShards(), Integer::sum);
+            }
+        }
+        Map<String, Float> avgMap = new HashMap<>();
+        for (Map.Entry<String, Integer> entry : groupPrimaryShards.entrySet()) {
+            avgMap.put(entry.getKey(), (float) entry.getValue() / nodeCount);
+        }
+        return Collections.unmodifiableMap(avgMap);
     }
 
     /**
@@ -765,7 +832,7 @@ public class LocalShardsBalancer extends ShardsBalancer {
     private Map<String, BalancedShardsAllocator.ModelNode> buildModelFromAssigned() {
         Map<String, BalancedShardsAllocator.ModelNode> nodes = new HashMap<>();
         for (RoutingNode rn : routingNodes) {
-            BalancedShardsAllocator.ModelNode node = new BalancedShardsAllocator.ModelNode(rn);
+            BalancedShardsAllocator.ModelNode node = new BalancedShardsAllocator.ModelNode(rn, indexToGroup);
             nodes.put(rn.nodeId(), node);
             for (ShardRouting shard : rn) {
                 assert rn.nodeId().equals(shard.currentNodeId());
@@ -1084,13 +1151,21 @@ public class LocalShardsBalancer extends ShardsBalancer {
                     continue;
                 }
                 // This is a safety net which prevents un-necessary primary shard relocations from maxNode to minNode when
-                // doing such relocation wouldn't help in primary balance. The condition won't be applicable when we enable node level
-                // primary rebalance
+                // doing such relocation wouldn't help in primary balance. When the index belongs to a group, use group-level
+                // primary counts to allow cross-index primary balancing within the group.
                 if (preferPrimaryBalance == true
                     && preferPrimaryRebalance == false
-                    && shard.primary()
-                    && maxNode.numPrimaryShards(shard.getIndexName()) - minNode.numPrimaryShards(shard.getIndexName()) < 2) {
-                    continue;
+                    && shard.primary()) {
+                    String group = maxNode.getGroupForIndex(shard.getIndexName());
+                    if (group != null) {
+                        if (maxNode.numGroupPrimaryShards(group) - minNode.numGroupPrimaryShards(group) < 2) {
+                            continue;
+                        }
+                    } else {
+                        if (maxNode.numPrimaryShards(shard.getIndexName()) - minNode.numPrimaryShards(shard.getIndexName()) < 2) {
+                            continue;
+                        }
+                    }
                 }
                 // Relax the above condition to per node to allow rebalancing to attain global balance
                 if (preferPrimaryRebalance == true && shard.primary() && maxNode.numPrimaryShards() - minNode.numPrimaryShards() < 2) {

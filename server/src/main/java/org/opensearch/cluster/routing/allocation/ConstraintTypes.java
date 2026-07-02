@@ -42,18 +42,18 @@ public class ConstraintTypes {
      * Constraint to control number of shards of an index allocated on a single
      * node.
      * <p>
-     * In current weight function implementation, when a node has significantly
-     * fewer shards than other nodes (e.g. during single new node addition or node
-     * replacement), its weight is much less than other nodes. All shard allocations
-     * at this time tend to land on the new node with skewed weight. This breaks
-     * index level balance in the cluster, by creating all shards of the same index
-     * on one node, often resulting in a hotspot on that node.
-     * <p>
-     * This constraint is breached when balancer attempts to allocate more than
-     * average shards per index per node.
+     * When an index belongs to a group, this constraint uses group-level shard
+     * counts instead of per-index counts, treating all indices in the group as
+     * one unit.
      */
     public static Predicate<Constraint.ConstraintParams> isIndexShardsPerNodeBreached() {
         return (params) -> {
+            String group = params.getNode().getGroupForIndex(params.getIndex());
+            if (group != null) {
+                int currGroupShardsOnNode = params.getNode().numGroupShards(group);
+                int allowedGroupShardsPerNode = (int) Math.ceil(params.getBalancer().avgShardsPerGroup(group));
+                return currGroupShardsOnNode >= allowedGroupShardsPerNode;
+            }
             int currIndexShardsOnNode = params.getNode().numShards(params.getIndex());
             int allowedIndexShardsPerNode = (int) Math.ceil(params.getBalancer().avgShardsPerNode(params.getIndex()));
             return (currIndexShardsOnNode >= allowedIndexShardsPerNode);
@@ -61,13 +61,18 @@ public class ConstraintTypes {
     }
 
     /**
-     * Defines a predicate which returns true when specific to an index, a node contains more than average number of primary
-     * shards. This constraint is used in weight calculation during allocation and rebalancing. When breached a high weight
-     * {@link ConstraintTypes#CONSTRAINT_WEIGHT} is assigned to node resulting in lesser chances of node being selected
-     * as allocation or rebalancing target
+     * Defines a predicate which returns true when specific to an index (or its group),
+     * a node contains more than average number of primary shards. When an index belongs
+     * to a group, this uses group-level primary shard counts.
      */
     public static Predicate<Constraint.ConstraintParams> isPerIndexPrimaryShardsPerNodeBreached() {
         return (params) -> {
+            String group = params.getNode().getGroupForIndex(params.getIndex());
+            if (group != null) {
+                int groupPrimaryShardCount = params.getNode().numGroupPrimaryShards(group);
+                int allowedCount = (int) Math.ceil(params.getBalancer().avgPrimaryShardsPerGroup(group));
+                return groupPrimaryShardCount >= allowedCount;
+            }
             int perIndexPrimaryShardCount = params.getNode().numPrimaryShards(params.getIndex());
             int perIndexAllowedPrimaryShardCount = (int) Math.ceil(params.getBalancer().avgPrimaryShardsPerNode(params.getIndex()));
             return perIndexPrimaryShardCount >= perIndexAllowedPrimaryShardCount;

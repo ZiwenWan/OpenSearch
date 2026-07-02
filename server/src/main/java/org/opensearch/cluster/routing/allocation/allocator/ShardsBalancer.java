@@ -87,4 +87,18 @@ public abstract class ShardsBalancer {
         return Float.MAX_VALUE;
     }
 
+    /**
+     * Returns the average of shards per node for the given index group
+     */
+    public float avgShardsPerGroup(String group) {
+        return Float.MAX_VALUE;
+    }
+
+    /**
+     * Returns the average of primary shards per node for the given index group
+     */
+    public float avgPrimaryShardsPerGroup(String group) {
+        return Float.MAX_VALUE;
+    }
+
 }

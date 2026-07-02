@@ -594,7 +594,13 @@ public class BalancedShardsAllocator implements ShardsAllocator {
 
         float weight(ShardsBalancer balancer, ModelNode node, String index) {
             final float weightShard = node.numShards() - balancer.avgShardsPerNode();
-            final float weightIndex = node.numShards(index) - balancer.avgShardsPerNode(index);
+            String group = node.getGroupForIndex(index);
+            final float weightIndex;
+            if (group != null) {
+                weightIndex = node.numGroupShards(group) - balancer.avgShardsPerGroup(group);
+            } else {
+                weightIndex = node.numShards(index) - balancer.avgShardsPerNode(index);
+            }
             return theta0 * weightShard + theta1 * weightIndex;
         }
 
@@ -621,9 +627,13 @@ public class BalancedShardsAllocator implements ShardsAllocator {
         private int numShards = 0;
         private int numPrimaryShards = 0;
         private final RoutingNode routingNode;
+        private final Map<String, String> indexToGroup;
+        private final Map<String, Integer> groupShardCounts = new HashMap<>();
+        private final Map<String, Integer> groupPrimaryShardCounts = new HashMap<>();
 
-        ModelNode(RoutingNode routingNode) {
+        ModelNode(RoutingNode routingNode, Map<String, String> indexToGroup) {
             this.routingNode = routingNode;
+            this.indexToGroup = indexToGroup;
         }
 
         public ModelIndex getIndex(String indexId) {
@@ -656,6 +666,18 @@ public class BalancedShardsAllocator implements ShardsAllocator {
             return numPrimaryShards;
         }
 
+        public int numGroupShards(String group) {
+            return groupShardCounts.getOrDefault(group, 0);
+        }
+
+        public int numGroupPrimaryShards(String group) {
+            return groupPrimaryShardCounts.getOrDefault(group, 0);
+        }
+
+        public String getGroupForIndex(String index) {
+            return indexToGroup.get(index);
+        }
+
         public int highestPrimary(String index) {
             ModelIndex idx = indices.get(index);
             if (idx != null) {
@@ -674,7 +696,13 @@ public class BalancedShardsAllocator implements ShardsAllocator {
             if (shard.primary()) {
                 numPrimaryShards++;
             }
-
+            String group = indexToGroup.get(shard.getIndexName());
+            if (group != null) {
+                groupShardCounts.merge(group, 1, Integer::sum);
+                if (shard.primary()) {
+                    groupPrimaryShardCounts.merge(group, 1, Integer::sum);
+                }
+            }
             numShards++;
         }
 
@@ -690,7 +718,13 @@ public class BalancedShardsAllocator implements ShardsAllocator {
             if (shard.primary()) {
                 numPrimaryShards--;
             }
-
+            String group = indexToGroup.get(shard.getIndexName());
+            if (group != null) {
+                groupShardCounts.merge(group, -1, Integer::sum);
+                if (shard.primary()) {
+                    groupPrimaryShardCounts.merge(group, -1, Integer::sum);
+                }
+            }
             numShards--;
         }
 

@@ -742,6 +742,12 @@ public class IndexMetadata implements Diffable<IndexMetadata>, ToXContentFragmen
         Property.UnmodifiableOnRestore
     );
 
+    public static final Setting<String> INDEX_ROUTING_ALLOCATION_INDEX_GROUP_SETTING = Setting.simpleString(
+        "index.routing.allocation.index_group",
+        Property.Dynamic,
+        Property.IndexScope
+    );
+
     public static final String INDEX_ROUTING_REQUIRE_GROUP_PREFIX = "index.routing.allocation.require";
     public static final String INDEX_ROUTING_INCLUDE_GROUP_PREFIX = "index.routing.allocation.include";
     public static final String INDEX_ROUTING_EXCLUDE_GROUP_PREFIX = "index.routing.allocation.exclude";
